@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">Sunmi Printer Server</string>
+
+    <!-- Notificación -->
+    <string name="notif_channel_name">Servidor de impresión</string>
+    <string name="notif_channel_desc">Notificación persistente mientras el servidor HTTP está activo</string>
+    <string name="notif_title">Servidor de impresión activo</string>
+    <string name="notif_text">Escuchando en %1$s</string>
+
+    <!-- UI -->
+    <string name="title_server">Servidor</string>
+    <string name="title_printer">Impresora</string>
+    <string name="label_status">Estado:</string>
+    <string name="label_url">Dirección:</string>
+    <string name="label_port">Puerto</string>
+    <string name="label_autostart">Iniciar al arrancar el dispositivo</string>
+    <string name="btn_start">Iniciar</string>
+    <string name="btn_stop">Detener</string>
+    <string name="btn_refresh">Actualizar</string>
+
+    <string name="state_running">Activo</string>
+    <string name="state_stopped">Detenido</string>
+    <string name="url_placeholder">—</string>
+    <string name="invalid_port">Puerto inválido (1024–65535)</string>
+</resources>

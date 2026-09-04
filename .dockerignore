@@ -1,0 +1,18 @@
+# Artefactos de build (se regeneran dentro del contenedor)
+build/
+app/build/
+.gradle/
+**/*.iml
+
+# SDK local del host (el contenedor usa su propio ANDROID_HOME)
+local.properties
+
+# Control de versiones y herramientas
+.git/
+.idea/
+.claude/
+.codex/
+
+# Documentación/planificación no necesaria para compilar
+openspec/
+*.md
