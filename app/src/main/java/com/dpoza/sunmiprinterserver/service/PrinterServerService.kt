@@ -38,14 +38,14 @@ class PrinterServerService : Service() {
         val port = intent?.getIntExtra(EXTRA_PORT, config.port) ?: config.port
 
         startForegroundCompat(buildNotification(port))
-        startServer(port)
+        startServer(port, config.corsOrigin)
         return START_STICKY
     }
 
-    private fun startServer(port: Int) {
+    private fun startServer(port: Int, corsOrigin: String) {
         // Reinicia si ya había uno corriendo.
         stopServer()
-        val srv = PrinterServer(port)
+        val srv = PrinterServer(port, corsOrigin)
         try {
             srv.start(SOCKET_READ_TIMEOUT, false)
             server = srv

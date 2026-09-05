@@ -13,6 +13,9 @@
     <string name="label_status">Estado:</string>
     <string name="label_url">Dirección:</string>
     <string name="label_port">Puerto</string>
+    <string name="label_cors_origin">Dominio permitido (CORS)</string>
+    <string name="hint_cors_origin">inventario.mksmad.org</string>
+    <string name="help_cors_origin">Déjalo vacío para permitir cualquier origen.</string>
     <string name="label_autostart">Iniciar al arrancar el dispositivo</string>
     <string name="btn_start">Iniciar</string>
     <string name="btn_stop">Detener</string>

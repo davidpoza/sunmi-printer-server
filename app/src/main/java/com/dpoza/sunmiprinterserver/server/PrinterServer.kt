@@ -18,21 +18,34 @@ import org.json.JSONObject
  *  - `POST /print`   imprime una imagen vía `printBitmap` (PNG/JPEG binario o `image_base64`),
  *                    o ESC/POS crudo vía `sendRAWData` (octet-stream o `escpos_base64`)
  *  - `GET  /diagnostics`  lectura cruda del servicio para depurar alineación del AIDL
+ *
+ * Todas las respuestas incluyen cabeceras CORS. [allowedOrigin] limita el origen permitido
+ * (p. ej. `inventario.mksmad.org`); vacío permite cualquier origen (`*`). Las peticiones
+ * `OPTIONS` de preflight se responden con 204 y las cabeceras CORS correspondientes.
  */
-class PrinterServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
+class PrinterServer(
+    port: Int,
+    private val allowedOrigin: String = "",
+) : NanoHTTPD("0.0.0.0", port) {
 
     override fun serve(session: IHTTPSession): Response {
-        return try {
+        val response = try {
             route(session)
         } catch (e: Exception) {
             Log.e(TAG, "Error no controlado atendiendo ${session.method} ${session.uri}", e)
             json(Http.INTERNAL_ERROR, ok = false, extra = mapOf("error" to "Error interno del servidor"))
         }
+        addCorsHeaders(response, session.headers["origin"])
+        return response
     }
 
     private fun route(session: IHTTPSession): Response {
-        val uri = session.uri.trimEnd('/').ifEmpty { "/" }
         val method = session.method
+        if (method == Method.OPTIONS) {
+            // Preflight CORS: las cabeceras las añade addCorsHeaders() en serve().
+            return newFixedLengthResponse(Http.NO_CONTENT, MIME_JSON, "")
+        }
+        val uri = session.uri.trimEnd('/').ifEmpty { "/" }
         return when (uri) {
             "/" -> if (method == Method.GET) health() else methodNotAllowed()
             "/status" -> if (method == Method.GET) status() else methodNotAllowed()
@@ -192,6 +205,53 @@ class PrinterServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
         return newFixedLengthResponse(status, MIME_JSON, body.toString())
     }
 
+    // --- CORS ----------------------------------------------------------------
+
+    /** Añade las cabeceras CORS a [response] según [allowedOrigin] y el `Origin` de la petición. */
+    private fun addCorsHeaders(response: Response, requestOrigin: String?) {
+        val allow = resolveAllowOrigin(requestOrigin)
+        response.addHeader("Access-Control-Allow-Origin", allow)
+        if (allow != "*") response.addHeader("Vary", "Origin")
+        response.addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        response.addHeader("Access-Control-Allow-Headers", "Content-Type")
+        response.addHeader("Access-Control-Max-Age", "86400")
+    }
+
+    /**
+     * Decide el valor de `Access-Control-Allow-Origin`:
+     *  - Si no hay dominio configurado, se permite cualquier origen (`*`).
+     *  - Si el `Origin` de la petición coincide (por host) con el configurado, se refleja tal cual
+     *    (así se conservan esquema y puerto que exige el navegador).
+     *  - En cualquier otro caso se devuelve el origen configurado normalizado.
+     */
+    private fun resolveAllowOrigin(requestOrigin: String?): String {
+        val configured = allowedOrigin.trim()
+        if (configured.isEmpty() || configured == "*") return "*"
+        val configuredHost = hostOf(configured)
+        val requestHost = requestOrigin?.let { hostOf(it) }
+        return if (requestOrigin != null && requestHost != null && requestHost.equals(configuredHost, ignoreCase = true)) {
+            requestOrigin
+        } else {
+            normalizeOrigin(configured)
+        }
+    }
+
+    /** Extrae el host de un origen o dominio, ignorando esquema, ruta y puerto. */
+    private fun hostOf(value: String): String? {
+        var v = value.trim()
+        if (v.isEmpty()) return null
+        val schemeIdx = v.indexOf("://")
+        if (schemeIdx >= 0) v = v.substring(schemeIdx + 3)
+        v = v.substringBefore('/').substringBefore(':')
+        return v.ifEmpty { null }
+    }
+
+    /** Asegura que el origen tenga esquema (asume `https://` si falta) y sin barra final. */
+    private fun normalizeOrigin(value: String): String {
+        val v = value.trim().trimEnd('/')
+        return if (v.contains("://")) v else "https://$v"
+    }
+
     companion object {
         private const val TAG = "PrinterServer"
         const val SERVICE_NAME = "Sunmi HTTP Printer Server"
@@ -202,6 +262,7 @@ class PrinterServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
     /** Estados HTTP como [Response.IStatus] propios (garantiza 503, no siempre en el enum de NanoHTTPD). */
     private object Http {
         val OK = status(200, "OK")
+        val NO_CONTENT = status(204, "No Content")
         val BAD_REQUEST = status(400, "Bad Request")
         val NOT_FOUND = status(404, "Not Found")
         val METHOD_NOT_ALLOWED = status(405, "Method Not Allowed")

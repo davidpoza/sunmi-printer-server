@@ -37,6 +37,7 @@ class MainActivity : Activity() {
 
         config = ServerConfig(this)
         binding.editPort.setText(config.port.toString())
+        binding.editCorsOrigin.setText(config.corsOrigin)
         binding.switchAutostart.isChecked = config.autostart
 
         binding.switchAutostart.setOnCheckedChangeListener { _, checked ->
@@ -66,6 +67,7 @@ class MainActivity : Activity() {
             return
         }
         config.port = port
+        config.corsOrigin = binding.editCorsOrigin.text.toString().trim()
         PrinterServerService.start(this, port)
         handler.postDelayed({ refresh() }, 400)
     }

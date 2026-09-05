@@ -58,6 +58,27 @@
             android:hint="8080"
             android:autofillHints="" />
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/label_cors_origin"
+            android:paddingTop="16dp" />
+
+        <EditText
+            android:id="@+id/editCorsOrigin"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="textUri"
+            android:hint="@string/hint_cors_origin"
+            android:autofillHints="" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/help_cors_origin"
+            android:textSize="12sp"
+            android:paddingTop="4dp" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
