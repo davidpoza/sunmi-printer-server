@@ -104,13 +104,17 @@ curl -H "Content-Type: application/json" \
 - `404` ruta desconocida · `405` método no permitido
 - `503` impresora no disponible
 
-## Nota sobre el AIDL de Sunmi
+## Integración con la impresora Sunmi
 
-`app/src/main/aidl/woyou/aidlservice/jiuiv5/` contiene una **copia vendorizada** de la
-interfaz AIDL oficial de Sunmi. El **orden de los métodos** define los IDs de transacción
-Binder y debe coincidir con el servicio del terminal. Si tu firmware usa una versión de SDK
-distinta, sustituye estos `.aidl` por los oficiales de Sunmi. El acoplamiento con el SDK
-está aislado en `printer/PrinterManager.kt`.
+La impresión usa el **SDK oficial de Sunmi** (`com.sunmi:printerlibrary`, Maven Central): el
+binding se hace con `InnerPrinterManager.bindService(...)` y se obtiene un `SunmiPrinterService`
+en `InnerPrinterCallback`. Todo el acoplamiento con el SDK está aislado en
+`printer/PrinterManager.kt`.
+
+Se abandonó el AIDL vendorizado (`woyou.aidlservice.jiuiv5`) porque su orden de métodos —que
+define los IDs de transacción Binder— no coincidía con algunos firmwares, y las impresiones
+"no salían" aunque el servicio estuviera vinculado. El SDK oficial trae el AIDL correcto para
+cada terminal.
 
 ## Verificación en dispositivo (pendiente de hardware)
 

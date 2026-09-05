@@ -17,8 +17,6 @@ android {
 
     buildFeatures {
         viewBinding = true
-        // The Sunmi printer service is consumed through vendored AIDL.
-        aidl = true
     }
 
     buildTypes {
@@ -44,4 +42,8 @@ android {
 dependencies {
     // Lightweight embedded HTTP server.
     implementation("org.nanohttpd:nanohttpd:2.3.1")
+
+    // SDK oficial de impresora Sunmi (trae el AIDL correcto para el firmware del terminal).
+    // https://mvnrepository.com/artifact/com.sunmi/printerlibrary
+    implementation("com.sunmi:printerlibrary:1.0.24")
 }

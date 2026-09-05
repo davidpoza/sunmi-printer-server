@@ -1,17 +1,15 @@
 package com.dpoza.sunmiprinterserver.printer
 
-import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
-import android.content.ServiceConnection
 import android.graphics.Bitmap
 import android.os.Handler
-import android.os.IBinder
 import android.os.Looper
 import android.os.RemoteException
 import android.util.Log
-import woyou.aidlservice.jiuiv5.ICallback
-import woyou.aidlservice.jiuiv5.IWoyouService
+import com.sunmi.peripheral.printer.InnerPrinterCallback
+import com.sunmi.peripheral.printer.InnerPrinterManager
+import com.sunmi.peripheral.printer.InnerResultCallback
+import com.sunmi.peripheral.printer.SunmiPrinterService
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -21,23 +19,25 @@ import kotlin.concurrent.withLock
 /**
  * Punto único de integración con el servicio de impresión interno de Sunmi.
  *
- * Responsabilidades:
- *  - Vincularse (bindService) al servicio `woyou.aidlservice.jiuiv5` y reconectar si cae.
- *  - Reenviar bytes ESC/POS crudos con [printRaw], serializando el acceso a la impresora.
- *  - Exponer el estado con [getStatus].
+ * Usa el **SDK oficial de Sunmi** (`com.sunmi:printerlibrary`): se vincula con
+ * [InnerPrinterManager.bindService] y recibe un [SunmiPrinterService] en [InnerPrinterCallback].
+ * Esto evita el frágil AIDL vendorizado (cuyos IDs de transacción no coincidían con el firmware
+ * y hacían que las impresiones "no salieran"); el SDK trae el AIDL correcto para cada terminal.
  *
- * Toda la fragilidad del SDK Sunmi queda encapsulada aquí: cualquier error del binder se
- * traduce a un [PrintResult]/[PrinterStatus] sin propagar excepciones al servidor HTTP.
+ * Responsabilidades:
+ *  - Vincular/reconectar el servicio de impresión.
+ *  - Reenviar bytes ESC/POS crudos ([printRaw]) o imágenes ([printBitmap]), serializando el acceso.
+ *  - Exponer estado ([getStatus]) y diagnóstico crudo ([getDiagnostics]).
+ *
+ * Cualquier error del binder se traduce a un [PrintResult]/[PrinterStatus] sin propagar excepciones.
  */
 object PrinterManager {
 
     private const val TAG = "PrinterManager"
-    private const val SUNMI_PACKAGE = "woyou.aidlservice.jiuiv5"
-    private const val SUNMI_ACTION = "woyou.aidlservice.jiuiv5.IWoyouService"
     private const val PRINT_TIMEOUT_MS = 15_000L
     private const val REBIND_DELAY_MS = 3_000L
 
-    private val service = AtomicReference<IWoyouService?>(null)
+    private val service = AtomicReference<SunmiPrinterService?>(null)
     private val printLock = ReentrantLock(true)
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -51,15 +51,15 @@ object PrinterManager {
     @Volatile
     private var serviceMissing = false
 
-    private val connection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            Log.i(TAG, "Servicio de impresión conectado")
+    private val innerCallback = object : InnerPrinterCallback() {
+        override fun onConnected(svc: SunmiPrinterService) {
+            Log.i(TAG, "SunmiPrinterService conectado")
             serviceMissing = false
-            service.set(IWoyouService.Stub.asInterface(binder))
+            service.set(svc)
         }
 
-        override fun onServiceDisconnected(name: ComponentName?) {
-            Log.w(TAG, "Servicio de impresión desconectado; se reintentará el binding")
+        override fun onDisconnected() {
+            Log.w(TAG, "SunmiPrinterService desconectado; se reintentará el binding")
             service.set(null)
             scheduleRebind()
         }
@@ -79,20 +79,16 @@ object PrinterManager {
         bindRequested = false
         mainHandler.removeCallbacksAndMessages(null)
         val ctx = appContext
-        if (ctx != null && service.get() != null) {
-            runCatching { ctx.unbindService(connection) }
+        if (ctx != null) {
+            runCatching { InnerPrinterManager.getInstance().unBindService(ctx, innerCallback) }
         }
         service.set(null)
     }
 
     private fun doBind() {
         val ctx = appContext ?: return
-        val intent = Intent().apply {
-            setPackage(SUNMI_PACKAGE)
-            action = SUNMI_ACTION
-        }
         val ok = runCatching {
-            ctx.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+            InnerPrinterManager.getInstance().bindService(ctx, innerCallback)
         }.getOrDefault(false)
         if (!ok) {
             serviceMissing = true
@@ -109,9 +105,7 @@ object PrinterManager {
         }, REBIND_DELAY_MS)
     }
 
-    /**
-     * Reenvía [data] tal cual (passthrough ESC/POS) a la impresora vía `sendRAWData`.
-     */
+    /** Reenvía [data] tal cual (passthrough ESC/POS) a la impresora vía `sendRAWData`. */
     fun printRaw(data: ByteArray): PrintResult =
         runPrintJob("sendRAWData") { svc, cb -> svc.sendRAWData(data, cb) }
 
@@ -128,14 +122,17 @@ object PrinterManager {
      * confirmación con timeout. [dispatch] invoca el método concreto del servicio (raw o bitmap),
      * de modo que la gestión de callback/latch/errores se comparte entre todos los modos.
      */
-    private fun runPrintJob(op: String, dispatch: (IWoyouService, ICallback) -> Unit): PrintResult {
+    private fun runPrintJob(
+        op: String,
+        dispatch: (SunmiPrinterService, InnerResultCallback) -> Unit,
+    ): PrintResult {
         val svc = service.get() ?: return PrintResult.Unavailable
 
         return printLock.withLock {
             val latch = CountDownLatch(1)
             val outcome = AtomicReference<PrintResult>(null)
 
-            val callback = object : ICallback.Stub() {
+            val callback = object : InnerResultCallback() {
                 override fun onRunResult(isSuccess: Boolean) {
                     outcome.compareAndSet(null, if (isSuccess) PrintResult.Success else PrintResult.Failure("La impresora reportó fallo"))
                     latch.countDown()
@@ -179,9 +176,8 @@ object PrinterManager {
 
     /**
      * Lee campos crudos del servicio (serial, versión, modelo, código de estado) para verificar
-     * que el AIDL vendorizado está alineado con el firmware. Cada llamada va aislada: si una
-     * lanza o el orden de transacción no cuadra, se registra en [PrinterDiagnostics.errors] sin
-     * abortar el resto. Útil para diagnosticar timeouts de impresión / estados falsos.
+     * que el servicio responde. Cada llamada va aislada: si una lanza, se registra en
+     * [PrinterDiagnostics.errors] sin abortar el resto.
      */
     fun getDiagnostics(): PrinterDiagnostics {
         val svc = service.get()
@@ -203,9 +199,9 @@ object PrinterManager {
         return PrinterDiagnostics(
             bound = true,
             rawStateCode = probe("updatePrinterState") { svc.updatePrinterState() },
-            serialNo = probe("getPrinterSerialNo") { svc.getPrinterSerialNo() },
-            firmwareVersion = probe("getPrinterVersion") { svc.getPrinterVersion() },
-            model = probe("getPrinterModal") { svc.getPrinterModal() },
+            serialNo = probe("getPrinterSerialNo") { svc.printerSerialNo },
+            firmwareVersion = probe("getPrinterVersion") { svc.printerVersion },
+            model = probe("getPrinterModal") { svc.printerModal },
             errors = errors,
         )
     }
@@ -224,7 +220,6 @@ object PrinterManager {
             val state = PrinterState.fromSunmiCode(code)
             PrinterStatus(connected = true, state = state, detail = "Código de estado Sunmi: $code")
         } catch (e: Exception) {
-            // Vinculado pero no se pudo consultar el estado (p.ej. firmware con firma distinta).
             Log.w(TAG, "No se pudo obtener el estado de la impresora", e)
             PrinterStatus(connected = true, state = PrinterState.UNKNOWN, detail = "Impresora vinculada; estado no disponible")
         }
