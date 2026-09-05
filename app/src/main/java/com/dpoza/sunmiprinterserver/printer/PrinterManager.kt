@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.graphics.Bitmap
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -109,10 +110,25 @@ object PrinterManager {
     }
 
     /**
-     * Reenvía [data] tal cual (passthrough) a la impresora. Serializa el acceso para no
-     * intercalar comandos de trabajos concurrentes y espera la confirmación con timeout.
+     * Reenvía [data] tal cual (passthrough ESC/POS) a la impresora vía `sendRAWData`.
      */
-    fun printRaw(data: ByteArray): PrintResult {
+    fun printRaw(data: ByteArray): PrintResult =
+        runPrintJob("sendRAWData") { svc, cb -> svc.sendRAWData(data, cb) }
+
+    /**
+     * Imprime [bitmap] con `printBitmap`: el servicio lo convierte a monocromo y lo rasteriza.
+     * Es la vía de alto nivel equivalente a la que usan las apps de Sunmi y no depende de que el
+     * firmware soporte ESC/POS crudo, por lo que es más robusta para etiquetas/imágenes.
+     */
+    fun printBitmap(bitmap: Bitmap): PrintResult =
+        runPrintJob("printBitmap") { svc, cb -> svc.printBitmap(bitmap, cb) }
+
+    /**
+     * Ejecuta un trabajo de impresión serializando el acceso a la impresora y esperando la
+     * confirmación con timeout. [dispatch] invoca el método concreto del servicio (raw o bitmap),
+     * de modo que la gestión de callback/latch/errores se comparte entre todos los modos.
+     */
+    private fun runPrintJob(op: String, dispatch: (IWoyouService, ICallback) -> Unit): PrintResult {
         val svc = service.get() ?: return PrintResult.Unavailable
 
         return printLock.withLock {
@@ -126,7 +142,7 @@ object PrinterManager {
                 }
 
                 override fun onReturnString(result: String?) {
-                    // No usado para impresión cruda.
+                    // No usado para impresión.
                 }
 
                 override fun onRaiseException(code: Int, msg: String?) {
@@ -142,14 +158,14 @@ object PrinterManager {
             }
 
             try {
-                svc.sendRAWData(data, callback)
+                dispatch(svc, callback)
             } catch (e: RemoteException) {
-                Log.e(TAG, "RemoteException en sendRAWData; el servicio pudo morir", e)
+                Log.e(TAG, "RemoteException en $op; el servicio pudo morir", e)
                 service.set(null)
                 scheduleRebind()
                 return@withLock PrintResult.Failure("Fallo de comunicación con el servicio de impresión")
             } catch (e: Exception) {
-                Log.e(TAG, "Error inesperado en sendRAWData", e)
+                Log.e(TAG, "Error inesperado en $op", e)
                 return@withLock PrintResult.Failure("Error de impresión: ${e.message}")
             }
 
@@ -159,6 +175,39 @@ object PrinterManager {
                 else -> outcome.get() ?: PrintResult.Success
             }
         }
+    }
+
+    /**
+     * Lee campos crudos del servicio (serial, versión, modelo, código de estado) para verificar
+     * que el AIDL vendorizado está alineado con el firmware. Cada llamada va aislada: si una
+     * lanza o el orden de transacción no cuadra, se registra en [PrinterDiagnostics.errors] sin
+     * abortar el resto. Útil para diagnosticar timeouts de impresión / estados falsos.
+     */
+    fun getDiagnostics(): PrinterDiagnostics {
+        val svc = service.get()
+            ?: return PrinterDiagnostics(
+                bound = false,
+                rawStateCode = null,
+                serialNo = null,
+                firmwareVersion = null,
+                model = null,
+                errors = listOf("Servicio de impresión no vinculado"),
+            )
+
+        val errors = mutableListOf<String>()
+        fun <T> probe(name: String, block: () -> T): T? =
+            runCatching(block)
+                .onFailure { errors += "$name: ${it.message ?: it.javaClass.simpleName}" }
+                .getOrNull()
+
+        return PrinterDiagnostics(
+            bound = true,
+            rawStateCode = probe("updatePrinterState") { svc.updatePrinterState() },
+            serialNo = probe("getPrinterSerialNo") { svc.getPrinterSerialNo() },
+            firmwareVersion = probe("getPrinterVersion") { svc.getPrinterVersion() },
+            model = probe("getPrinterModal") { svc.getPrinterModal() },
+            errors = errors,
+        )
     }
 
     /** Devuelve el estado actual de la impresora sin lanzar excepciones. */

@@ -10,13 +10,12 @@ import android.os.Looper
 import android.widget.Toast
 import com.dpoza.sunmiprinterserver.config.ServerConfig
 import com.dpoza.sunmiprinterserver.databinding.ActivityMainBinding
-import com.dpoza.sunmiprinterserver.printer.PrinterManager
 import com.dpoza.sunmiprinterserver.service.PrinterServerService
 import com.dpoza.sunmiprinterserver.util.NetworkUtils
 
 /**
  * Pantalla de configuración y estado: iniciar/detener el servidor, configurar puerto y
- * autostart, y ver el estado del servidor y de la impresora.
+ * autostart, y ver el estado del servidor y su URL.
  */
 class MainActivity : Activity() {
 
@@ -89,9 +88,6 @@ class MainActivity : Activity() {
         ) + " " + getString(if (running) R.string.state_running else R.string.state_stopped)
 
         binding.txtUrl.text = if (running) NetworkUtils.baseUrl(port) else getString(R.string.url_placeholder)
-
-        val status = PrinterManager.getStatus()
-        binding.txtPrinterStatus.text = "${status.state.name} · ${status.detail}"
     }
 
     private fun maybeRequestNotificationPermission() {

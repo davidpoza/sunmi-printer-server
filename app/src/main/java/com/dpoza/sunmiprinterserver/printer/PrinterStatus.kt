@@ -51,6 +51,22 @@ data class PrinterStatus(
         get() = connected && (state == PrinterState.READY || state == PrinterState.UNKNOWN || state == PrinterState.PREPARING)
 }
 
+/**
+ * Lectura cruda del servicio para verificar que el AIDL vendorizado coincide con el firmware.
+ *
+ * Si [serialNo]/[firmwareVersion]/[model] salen vacíos, con excepción o con basura, o el
+ * [rawStateCode] no tiene sentido, el ORDEN de métodos del AIDL no cuadra con el del terminal
+ * (IDs de transacción Binder desalineados) y por eso las llamadas caen en el método equivocado.
+ */
+data class PrinterDiagnostics(
+    val bound: Boolean,
+    val rawStateCode: Int?,
+    val serialNo: String?,
+    val firmwareVersion: String?,
+    val model: String?,
+    val errors: List<String>,
+)
+
 /** Resultado de una operación de impresión. */
 sealed class PrintResult {
     /** Los bytes se entregaron a la impresora correctamente. */

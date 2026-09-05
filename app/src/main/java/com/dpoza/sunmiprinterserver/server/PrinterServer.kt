@@ -1,10 +1,12 @@
 package com.dpoza.sunmiprinterserver.server
 
+import android.graphics.BitmapFactory
 import android.util.Base64
 import android.util.Log
 import com.dpoza.sunmiprinterserver.printer.PrinterManager
 import com.dpoza.sunmiprinterserver.printer.PrintResult
 import fi.iki.elonen.NanoHTTPD
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -13,7 +15,9 @@ import org.json.JSONObject
  * Rutas:
  *  - `GET  /`        healthcheck (nombre + versión)
  *  - `GET  /status`  estado del servidor y de la impresora
- *  - `POST /print`   imprime ESC/POS crudo (octet-stream) o `{ "escpos_base64": "..." }`
+ *  - `POST /print`   imprime una imagen vía `printBitmap` (PNG/JPEG binario o `image_base64`),
+ *                    o ESC/POS crudo vía `sendRAWData` (octet-stream o `escpos_base64`)
+ *  - `GET  /diagnostics`  lectura cruda del servicio para depurar alineación del AIDL
  */
 class PrinterServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
 
@@ -32,6 +36,7 @@ class PrinterServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
         return when (uri) {
             "/" -> if (method == Method.GET) health() else methodNotAllowed()
             "/status" -> if (method == Method.GET) status() else methodNotAllowed()
+            "/diagnostics" -> if (method == Method.GET) diagnostics() else methodNotAllowed()
             "/print" -> if (method == Method.POST) print(session) else methodNotAllowed()
             else -> json(Http.NOT_FOUND, ok = false, extra = mapOf("error" to "Ruta no encontrada"))
         }
@@ -66,32 +71,71 @@ class PrinterServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
         return newFixedLengthResponse(Http.OK, MIME_JSON, body.toString())
     }
 
+    private fun diagnostics(): Response {
+        val d = PrinterManager.getDiagnostics()
+        val body = JSONObject().apply {
+            put("ok", true)
+            put("bound", d.bound)
+            put("rawStateCode", d.rawStateCode ?: JSONObject.NULL)
+            put("serialNo", d.serialNo ?: JSONObject.NULL)
+            put("firmwareVersion", d.firmwareVersion ?: JSONObject.NULL)
+            put("model", d.model ?: JSONObject.NULL)
+            put("errors", JSONArray(d.errors))
+        }
+        return newFixedLengthResponse(Http.OK, MIME_JSON, body.toString())
+    }
+
     private fun print(session: IHTTPSession): Response {
         val contentType = (session.headers["content-type"] ?: "").substringBefore(';').trim().lowercase()
 
-        val data: ByteArray = when (contentType) {
+        // Payload + intención: imagen -> printBitmap; ESC/POS crudo -> sendRAWData.
+        val data: ByteArray
+        val asImage: Boolean
+
+        when (contentType) {
             MIME_JSON -> {
-                val raw = readBody(session)
-                    ?: return json(Http.BAD_REQUEST, ok = false, extra = mapOf("error" to "Cuerpo vacío"))
-                val base64 = runCatching { JSONObject(String(raw, Charsets.UTF_8)).optString("escpos_base64", "") }
-                    .getOrDefault("")
-                if (base64.isEmpty()) {
-                    return json(Http.BAD_REQUEST, ok = false, extra = mapOf("error" to "Falta el campo 'escpos_base64'"))
+                val raw = readBody(session) ?: return badRequest("Cuerpo vacío")
+                val body = runCatching { JSONObject(String(raw, Charsets.UTF_8)) }.getOrNull()
+                    ?: return badRequest("JSON inválido")
+                val imageB64 = body.optString("image_base64", "")
+                val escposB64 = body.optString("escpos_base64", "")
+                when {
+                    imageB64.isNotEmpty() -> {
+                        data = runCatching { Base64.decode(imageB64, Base64.DEFAULT) }.getOrNull()
+                            ?: return badRequest("El campo 'image_base64' no es base64 válido")
+                        asImage = true
+                    }
+                    escposB64.isNotEmpty() -> {
+                        data = runCatching { Base64.decode(escposB64, Base64.DEFAULT) }.getOrNull()
+                            ?: return badRequest("El campo 'escpos_base64' no es base64 válido")
+                        asImage = false
+                    }
+                    else -> return badRequest("Falta el campo 'image_base64' o 'escpos_base64'")
                 }
-                runCatching { Base64.decode(base64, Base64.DEFAULT) }.getOrNull()
-                    ?: return json(Http.BAD_REQUEST, ok = false, extra = mapOf("error" to "El campo 'escpos_base64' no es base64 válido"))
             }
 
-            else -> readBody(session)
-                ?: return json(Http.BAD_REQUEST, ok = false, extra = mapOf("error" to "Cuerpo vacío"))
+            else -> {
+                data = readBody(session) ?: return badRequest("Cuerpo vacío")
+                // Imagen si el Content-Type es image/* o si los bytes traen cabecera de imagen.
+                asImage = contentType.startsWith("image/") || looksLikeImage(data)
+            }
         }
 
-        if (data.isEmpty()) {
-            return json(Http.BAD_REQUEST, ok = false, extra = mapOf("error" to "Cuerpo vacío"))
+        if (data.isEmpty()) return badRequest("Cuerpo vacío")
+
+        val result = if (asImage) {
+            val bitmap = runCatching { BitmapFactory.decodeByteArray(data, 0, data.size) }.getOrNull()
+                ?: return badRequest("No se pudo decodificar la imagen (¿formato soportado?)")
+            PrinterManager.printBitmap(bitmap)
+        } else {
+            PrinterManager.printRaw(data)
         }
 
-        return when (val result = PrinterManager.printRaw(data)) {
-            is PrintResult.Success -> json(Http.OK, ok = true, extra = mapOf("bytes" to data.size))
+        return when (result) {
+            is PrintResult.Success -> json(
+                Http.OK, ok = true,
+                extra = mapOf("bytes" to data.size, "mode" to if (asImage) "bitmap" else "escpos"),
+            )
             is PrintResult.Unavailable -> json(
                 Http.SERVICE_UNAVAILABLE, ok = false,
                 extra = mapOf("error" to "Impresora no disponible"),
@@ -102,6 +146,22 @@ class PrinterServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
             )
         }
     }
+
+    /** Detecta por cabecera mágica los formatos que `BitmapFactory` sabe decodificar. */
+    private fun looksLikeImage(b: ByteArray): Boolean {
+        if (b.size < 4) return false
+        fun u(i: Int) = b[i].toInt() and 0xFF
+        return when {
+            u(0) == 0x89 && u(1) == 0x50 && u(2) == 0x4E && u(3) == 0x47 -> true // PNG
+            u(0) == 0xFF && u(1) == 0xD8 && u(2) == 0xFF -> true                  // JPEG
+            u(0) == 0x42 && u(1) == 0x4D -> true                                  // BMP
+            u(0) == 0x47 && u(1) == 0x49 && u(2) == 0x46 && u(3) == 0x38 -> true  // GIF
+            else -> false
+        }
+    }
+
+    private fun badRequest(msg: String): Response =
+        json(Http.BAD_REQUEST, ok = false, extra = mapOf("error" to msg))
 
     // --- Helpers -------------------------------------------------------------
 

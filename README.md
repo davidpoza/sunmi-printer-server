@@ -47,11 +47,39 @@ muestran la URL base `http://<ip-sunmi>:<puerto>`.
 
 Sin autenticación: pensado para una **red local de confianza**.
 
-| Método | Ruta      | Descripción |
-|--------|-----------|-------------|
-| GET    | `/`       | Healthcheck (`service`, `version`). |
-| GET    | `/status` | Estado del servidor y de la impresora. |
-| POST   | `/print`  | Imprime ESC/POS crudo. |
+| Método | Ruta           | Descripción |
+|--------|----------------|-------------|
+| GET    | `/`            | Healthcheck (`service`, `version`). |
+| GET    | `/status`      | Estado del servidor y de la impresora. |
+| GET    | `/diagnostics` | Lectura cruda del servicio (serial/versión/modelo/estado) para depurar el AIDL. |
+| POST   | `/print`       | Imprime una **imagen** (`printBitmap`) o **ESC/POS crudo** (`sendRAWData`). |
+
+`/print` decide el modo automáticamente:
+
+- **Imagen → `printBitmap`** (recomendado para etiquetas): `Content-Type: image/png` (o
+  `image/jpeg`), o JSON `{ "image_base64": "..." }`. También se autodetecta por la cabecera
+  del fichero si mandas la imagen como `application/octet-stream`.
+- **ESC/POS crudo → `sendRAWData`**: `application/octet-stream` con bytes que no son imagen, o
+  JSON `{ "escpos_base64": "..." }`.
+
+La respuesta incluye `"mode": "bitmap"` o `"mode": "escpos"` según la vía usada.
+
+### Imprimir una imagen (printBitmap)
+
+```bash
+# Binario PNG/JPEG
+curl --data-binary @etiqueta.png \
+  -H "Content-Type: image/png" \
+  http://<ip-sunmi>:8080/print
+
+# En base64 dentro de JSON
+curl -H "Content-Type: application/json" \
+  -d '{"image_base64":"iVBORw0KGgo..."}' \
+  http://<ip-sunmi>:8080/print
+```
+
+> Para una etiqueta de 50×30 mm a 203 dpi genera la imagen a **400×240 px** (ancho útil del
+> cabezal interno ≈ 384 px / 48 mm; si te pasas, recórtalo a 384).
 
 ### Imprimir ESC/POS binario
 
