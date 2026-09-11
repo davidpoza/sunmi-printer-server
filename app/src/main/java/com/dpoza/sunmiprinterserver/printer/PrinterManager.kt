@@ -113,9 +113,22 @@ object PrinterManager {
      * Imprime [bitmap] con `printBitmap`: el servicio lo convierte a monocromo y lo rasteriza.
      * Es la vía de alto nivel equivalente a la que usan las apps de Sunmi y no depende de que el
      * firmware soporte ESC/POS crudo, por lo que es más robusta para etiquetas/imágenes.
+     *
+     * Se envuelve en una transacción de buffer **autocontenida** para evitar el desfase "una
+     * etiqueta por detrás": sin confirmar el buffer, el ráster queda retenido en el buffer del
+     * *servicio* de impresión Sunmi (otro proceso, que sobrevive a reiniciar este servidor) y solo
+     * lo vuelca el siguiente trabajo. Aquí:
+     *  - `enterPrinterBuffer(true)` abre el buffer **limpiando restos** de trabajos previos.
+     *  - `exitPrinterBufferWithCallback(true, …)` hace commit **en el mismo trabajo**, así el
+     *    contenido se imprime ya y nada se rezaga a la siguiente impresión.
+     * No añade avance de papel en blanco: solo se imprime la propia imagen.
      */
     fun printBitmap(bitmap: Bitmap): PrintResult =
-        runPrintJob("printBitmap") { svc, cb -> svc.printBitmap(bitmap, cb) }
+        runPrintJob("printBitmap") { svc, cb ->
+            svc.enterPrinterBuffer(true)
+            svc.printBitmap(bitmap, null)
+            svc.exitPrinterBufferWithCallback(true, cb)
+        }
 
     /**
      * Ejecuta un trabajo de impresión serializando el acceso a la impresora y esperando la
