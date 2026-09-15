@@ -37,6 +37,16 @@ object PrinterManager {
     private const val PRINT_TIMEOUT_MS = 15_000L
     private const val REBIND_DELAY_MS = 3_000L
 
+    /**
+     * Líneas de avance de papel tras imprimir una etiqueta con [printBitmap].
+     *
+     * Se usa para **expulsar** la etiqueta en la misma petición (sin el desfase "una por detrás")
+     * ahora que no se usa el modo buffer de Sunmi. Es un compromiso: introduce un pequeño margen
+     * de papel en blanco tras cada etiqueta. Mantener al mínimo que expulse la etiqueta sin invadir
+     * la siguiente; valor a fijar tras verificación en la terminal física.
+     */
+    private const val LABEL_FEED_LINES = 2
+
     private val service = AtomicReference<SunmiPrinterService?>(null)
     private val printLock = ReentrantLock(true)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -114,20 +124,21 @@ object PrinterManager {
      * Es la vía de alto nivel equivalente a la que usan las apps de Sunmi y no depende de que el
      * firmware soporte ESC/POS crudo, por lo que es más robusta para etiquetas/imágenes.
      *
-     * Se envuelve en una transacción de buffer **autocontenida** para evitar el desfase "una
-     * etiqueta por detrás": sin confirmar el buffer, el ráster queda retenido en el buffer del
-     * *servicio* de impresión Sunmi (otro proceso, que sobrevive a reiniciar este servidor) y solo
-     * lo vuelca el siguiente trabajo. Aquí:
-     *  - `enterPrinterBuffer(true)` abre el buffer **limpiando restos** de trabajos previos.
-     *  - `exitPrinterBufferWithCallback(true, …)` hace commit **en el mismo trabajo**, así el
-     *    contenido se imprime ya y nada se rezaga a la siguiente impresión.
-     * No añade avance de papel en blanco: solo se imprime la propia imagen.
+     * **No usa el modo buffer de Sunmi.** Se imprime directamente con `printBitmap(bitmap, null)` y
+     * a continuación se avanza el papel con `lineWrap([LABEL_FEED_LINES], cb)` para **expulsar** la
+     * etiqueta en la misma petición. Esto evita a la vez:
+     *  - el desfase "una etiqueta por detrás" (el avance vuelca el ráster de inmediato, sin esperar
+     *    al siguiente trabajo), y
+     *  - el *double-print* del modo buffer de este firmware (no hay commit de buffer que se repita).
+     *
+     * El callback se pasa al **último** comando (`lineWrap`), de modo que [runPrintJob] confirma el
+     * resultado cuando toda la secuencia (imagen + avance) ha terminado. Como contrapartida, cada
+     * etiqueta deja un pequeño avance de papel en blanco (ver [LABEL_FEED_LINES]).
      */
     fun printBitmap(bitmap: Bitmap): PrintResult =
         runPrintJob("printBitmap") { svc, cb ->
-            svc.enterPrinterBuffer(true)
             svc.printBitmap(bitmap, null)
-            svc.exitPrinterBufferWithCallback(true, cb)
+            svc.lineWrap(LABEL_FEED_LINES, cb)
         }
 
     /**
