@@ -1,0 +1,65 @@
+name: Build & Release APK
+
+# Se dispara al publicar una etiqueta "v*" (ej. v1.0.0) y compila el APK
+# dentro de Docker (mismo Dockerfile que en local), publicándolo como
+# artefacto en la Release de GitHub asociada a esa etiqueta.
+on:
+  push:
+    tags:
+      - "v*"
+  # Permite lanzarlo a mano indicando la etiqueta/nombre de la release.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Etiqueta/nombre de la release (ej. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolver nombre de la release
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compilar y exportar APK con Docker
+        run: |
+          docker buildx build \
+            --target export \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --output type=local,dest=./dist \
+            .
+
+      - name: Renombrar APK con la versión
+        run: |
+          mv ./dist/app-debug.apk "./dist/sunmi-printer-server-${{ steps.meta.outputs.tag }}.apk"
+
+      - name: Subir APK como artefacto del workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: ./dist/*.apk
+          if-no-files-found: error
+
+      - name: Publicar Release con el APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.tag }}
+          files: ./dist/*.apk
+          generate_release_notes: true
